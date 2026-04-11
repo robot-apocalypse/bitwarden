@@ -77,30 +77,39 @@ resource "aws_instance" "vaultwarden" {
 
   user_data = <<-EOF
               #!/bin/bash
-              exec > /tmp/userdata.log 2>&1
-              set -x
+              set -e
+              exec > /var/log/user-data.log 2>&1
               
-              echo "Starting user_data script..."
-              
-              # Update and install basics
+              echo "Starting user_data..."
               export DEBIAN_FRONTEND=noninteractive
+              
+              # Update and upgrade
               apt-get update
-              apt-get install -y ufw docker.io docker-compose git unattended-upgrades curl
+              apt-get upgrade -y
+              
+              # Install basics
+              apt-get install -y ufw docker.io docker-compose git curl vim gnupg
+              
+              # GitHub CLI
+              curl -fsSL https://cli.github.com/packages/ikey.gpg | gpg --dearmor -o /usr/share/keyrings/github.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/github.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+              apt-get update
+              apt-get install -y gh
               
               # Set hostname
               hostnamectl set-hostname vaultwarden
               
-              # Configure firewall (skip ufw if not available)
-              ufw --force enable || true
-              ufw default deny incoming || true
-              ufw default allow outgoing || true
-              ufw allow 80/tcp || true
-              ufw allow 443/tcp || true
-              ufw allow 22/tcp || true
+              # Firewall
+              ufw --force enable
+              ufw default deny incoming
+              ufw default allow outgoing
+              ufw allow 80/tcp
+              ufw allow 443/tcp
+              ufw allow 22/tcp
               
               # SSH hardening
-              sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config || true
-              sed -i 's/^#*PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config || true
+              sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+              sed -i 's/^#*PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
               systemctl reload ssh || true
               
               # Unattended upgrades
@@ -117,8 +126,7 @@ UA
               systemctl enable docker || true
               systemctl start docker || true
               
-              echo "Done! Manual setup: cd /opt && git clone and configure"
-              echo "Done!" >> /tmp/userdata.log
+              echo "User data complete"
               EOF
 
   tags = { Name = "vaultwarden" }

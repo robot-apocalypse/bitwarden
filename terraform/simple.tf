@@ -76,58 +76,72 @@ resource "aws_instance" "vaultwarden" {
   iam_instance_profile   = aws_iam_instance_profile.vaultwarden.name
 
   user_data = <<-EOF
-              #!/bin/bash
-              set -e
-              exec > /var/log/user-data.log 2>&1
-              
-              echo "Starting user_data..."
-              export DEBIAN_FRONTEND=noninteractive
-              
-              # Update and upgrade
-              apt-get update
-              apt-get upgrade -y
-              
-              # Install basics
-              apt-get install -y ufw docker.io docker-compose git curl vim gnupg
-              
-              # GitHub CLI
-              curl -fsSL https://cli.github.com/packages/ikey.gpg | gpg --dearmor -o /usr/share/keyrings/github.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/github.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-              apt-get update
-              apt-get install -y gh
-              
-              # Set hostname
-              hostnamectl set-hostname vaultwarden
-              
-              # Firewall
-              ufw --force enable
-              ufw default deny incoming
-              ufw default allow outgoing
-              ufw allow 80/tcp
-              ufw allow 443/tcp
-              ufw allow 22/tcp
-              
-              # SSH hardening
-              sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-              sed -i 's/^#*PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
-              systemctl reload sshd || systemctl reload sshd || true
-              
-              # Unattended upgrades
-              cat > /etc/apt/apt.conf.d/50unattended-upgrades <<'UA'
-Unattended-Upgrades::Allowed-Origins {
-    "Ubuntu:noble-security";
-};
-Unattended-Upgrades::Automatic-Reboot "true";
-Unattended-Upgrades::Automatic-Reboot-Time "02:00";
-UA
-              
-              # Docker
-              usermod -aG docker ubuntu || true
-              systemctl enable docker || true
-              systemctl start docker || true
-              
-              echo "User data complete"
-              EOF
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - ufw
+  - docker.io
+  - docker-compose
+  - git
+  - curl
+  - vim
+  - gnupg
+  - gh
+  - unattended-upgrades
+
+hostname: vaultwarden
+
+write_files:
+  - path: /etc/ufw/ufw.conf
+    content: |
+      # UFW configuration
+      ENABLED=yes
+      DEFAULT_INPUT_POLICY="DROP"
+      DEFAULT_OUTPUT_POLICY="ACCEPT"
+      DEFAULT_FORWARD_POLICY="DROP"
+      DEFAULT_APPLICATION_POLICY="SKIP"
+      ManageBuiltins=yes
+  - path: /etc/apt/apt.conf.d/50unattended-upgrades
+    content: |
+      Unattended-Upgrades::Allowed-Origins {
+          "Ubuntu:noble-security";
+      };
+      Unattended-Upgrades::Automatic-Reboot "true";
+      Unattended-Upgrades::Automatic-Reboot-Time "02:00";
+  - content: |
+      #!/bin/bash
+      set -e
+      exec > /var/log/user-init.log 2>&1
+      
+      # UFW setup
+      ufw --force enable
+      ufw default deny incoming
+      ufw default allow outgoing
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+      ufw allow 22/tcp
+      
+      # SSH hardening
+      sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+      sed -i 's/^#*PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
+      systemctl reload sshd || systemctl reload ssh || true
+      
+      # Docker
+      usermod -aG docker ubuntu || true
+      systemctl enable docker
+      systemctl start docker
+      
+      echo "Init complete"
+    path: /opt/init.sh
+    owner: root:root
+    permissions: '0755'
+
+run_cmds:
+  - bash /opt/init.sh
+  - rm /opt/init.sh
+EOF
 
   tags = { Name = "vaultwarden" }
 }

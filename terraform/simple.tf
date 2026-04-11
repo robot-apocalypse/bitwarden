@@ -20,7 +20,7 @@ data "aws_subnets" "default" {
 }
 
 resource "aws_security_group" "vaultwarden" {
-  name        = "vaultwarden-v2"
+  name        = "vaultwarden-v3"
   description = "Vaultwarden HTTPS"
   vpc_id      = data.aws_vpc.default.id
 
@@ -51,7 +51,7 @@ resource "aws_iam_instance_profile" "vaultwarden" {
 }
 
 resource "aws_iam_role" "ssm" {
-  name = "vaultwarden-ssm-v2"
+  name = "vaultwarden-ssm-v3"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -117,12 +117,7 @@ UA
               systemctl enable docker || true
               systemctl start docker || true
               
-              # Clone repo
-              cd /opt
-              git clone https://github.com/robot-apocalypse/bitwarden.git || true
-              cd bitwarden
-              cp .env.example .env || true
-              
+              echo "Done! Manual setup: cd /opt && git clone and configure"
               echo "Done!" >> /tmp/userdata.log
               EOF
 

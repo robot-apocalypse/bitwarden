@@ -4,3 +4,6 @@ backups/
 *.log
 .docker/
 .DS_Store
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*

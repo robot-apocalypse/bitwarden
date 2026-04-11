@@ -110,7 +110,7 @@ resource "aws_instance" "vaultwarden" {
               # SSH hardening
               sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
               sed -i 's/^#*PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
-              systemctl reload ssh || true
+              systemctl reload sshd || systemctl reload sshd || true
               
               # Unattended upgrades
               cat > /etc/apt/apt.conf.d/50unattended-upgrades <<'UA'
@@ -134,4 +134,20 @@ UA
 
 output "public_ip" {
   value = aws_instance.vaultwarden.public_ip
+}
+
+output "domain" {
+  value = aws_route53_record.test.name
+}
+
+output "instance_id" {
+  value = aws_instance.vaultwarden.id
+}
+
+resource "aws_route53_record" "test" {
+  zone_id = "Z05138461ITQ58LOV0TYH"
+  name    = "bitwarden-test.peakscale.solutions"
+  type    = "A"
+  ttl     = 300
+  records = [aws_instance.vaultwarden.public_ip]
 }

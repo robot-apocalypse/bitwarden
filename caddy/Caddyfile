@@ -7,17 +7,6 @@
         }
     }
 
-    @websockets {
-        header Connection *Upgrade*
-        header Upgrade websocket
-    }
-
-    reverse_proxy /ws* vaultwarden:80 {
-        transport http {
-            enable_websockets
-        }
-    }
-
     reverse_proxy vaultwarden:80
 
     header {

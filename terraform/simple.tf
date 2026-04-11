@@ -69,79 +69,73 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 }
 
 resource "aws_instance" "vaultwarden" {
-  ami                    = "ami-0480a06f3f4f52216"
-  instance_type          = "t3.nano"
+  ami                    = "ami-0d76b909de1a0595d"
+  instance_type          = "t3.micro"
   subnet_id              = data.aws_subnets.default.ids[0]
   vpc_security_group_ids = [aws_security_group.vaultwarden.id]
   iam_instance_profile   = aws_iam_instance_profile.vaultwarden.name
 
   user_data = <<-EOF
-#cloud-config
-package_update: true
-package_upgrade: true
+    #!/bin/bash
 
-packages:
-  - ufw
-  - docker.io
-  - docker-compose
-  - git
-  - curl
-  - vim
-  - gnupg
-  - gh
-  - unattended-upgrades
+    # Set hostname
+    hostnamectl set-hostname vaultwarden
 
-hostname: vaultwarden
+    # Update and install packages
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      ufw \
+      docker.io \
+      docker-compose-v2 \
+      git \
+      curl \
+      vim \
+      gnupg \
+      gh \
+      unattended-upgrades
 
-write_files:
-  - path: /etc/ufw/ufw.conf
-    content: |
-      # UFW configuration
-      ENABLED=yes
-      DEFAULT_INPUT_POLICY="DROP"
-      DEFAULT_OUTPUT_POLICY="ACCEPT"
-      DEFAULT_FORWARD_POLICY="DROP"
-      DEFAULT_APPLICATION_POLICY="SKIP"
-      ManageBuiltins=yes
-  - path: /etc/apt/apt.conf.d/50unattended-upgrades
-    content: |
-      Unattended-Upgrades::Allowed-Origins {
-          "Ubuntu:noble-security";
-      };
-      Unattended-Upgrades::Automatic-Reboot "true";
-      Unattended-Upgrades::Automatic-Reboot-Time "02:00";
-  - content: |
-      #!/bin/bash
-      set -e
-      exec > /var/log/user-init.log 2>&1
-      
-      # UFW setup
-      ufw --force enable
-      ufw default deny incoming
-      ufw default allow outgoing
-      ufw allow 80/tcp
-      ufw allow 443/tcp
-      ufw allow 22/tcp
-      
-      # SSH hardening
-      sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-      sed -i 's/^#*PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
-      systemctl reload sshd || systemctl reload ssh || true
-      
-      # Docker
-      usermod -aG docker ubuntu || true
-      systemctl enable docker
-      systemctl start docker
-      
-      echo "Init complete"
-    path: /opt/init.sh
-    owner: root:root
-    permissions: '0755'
+    # UFW configuration
+    cat <<UFW_CONF > /etc/ufw/ufw.conf
+    # UFW configuration
+    ENABLED=yes
+    DEFAULT_INPUT_POLICY="DROP"
+    DEFAULT_OUTPUT_POLICY="ACCEPT"
+    DEFAULT_FORWARD_POLICY="DROP"
+    DEFAULT_APPLICATION_POLICY="SKIP"
+    ManageBuiltins=yes
+UFW_CONF
 
-run_cmds:
-  - bash /opt/init.sh
-  - rm /opt/init.sh
-EOF
+    # Unattended-upgrades configuration
+    cat <<UA_CONF > /etc/apt/apt.conf.d/50unattended-upgrades
+    Unattended-Upgrades::Allowed-Origins {
+        "Ubuntu:noble-security";
+    };
+    Unattended-Upgrades::Automatic-Reboot "true";
+    Unattended-Upgrades::Automatic-Reboot-Time "02:00";
+UA_CONF
+
+    # UFW setup
+    ufw --force enable
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+
+    # SSH hardening
+    sed -i 's/^#*PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+    sed -i 's/^#*PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
+    systemctl reload sshd || systemctl reload ssh || true
+
+    # Docker
+    usermod -aG docker ubuntu || true
+    systemctl enable docker
+    systemctl start docker
+
+    # Upgrade system
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+
+    echo "Init complete"
+  EOF
 
   tags = { Name = "vaultwarden" }
 }

@@ -1,0 +1,26 @@
+version: '3.8'
+
+# Local testing only - no HTTPS, no Caddy
+# Access at http://localhost:8080
+
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    ports:
+      - "8888:80"
+    volumes:
+      - vw-data-local:/data
+    environment:
+      - DOMAIN=http://localhost:8080
+      - ADMIN_TOKEN=localdev123
+      - SIGNUPS_ALLOWED=true
+      - SHOW_PASSWORD_HINT=true
+      - ROCKET_ADDRESS=0.0.0.0
+      - ROCKET_PORT=80
+      - LOG_LEVEL=debug
+      - EXTENDED_LOGGING=true
+
+volumes:
+  vw-data-local:

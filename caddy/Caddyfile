@@ -1,0 +1,27 @@
+{$DOMAIN} {
+    log {
+        level INFO
+        output file /data/access.log {
+            roll_size 10MB
+            roll_keep 10
+        }
+    }
+
+    @websockets {
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+
+    reverse_proxy /ws* vaultwarden:80 {
+        transport http {
+            enable_websockets
+        }
+    }
+
+    reverse_proxy vaultwarden:80
+
+    header {
+        -Server
+        -X-Powered-By
+    }
+}

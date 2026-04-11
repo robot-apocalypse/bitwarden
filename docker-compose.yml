@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    volumes:
+      - vw-data:/data
+    environment:
+      - DOMAIN=${DOMAIN}
+      - ADMIN_TOKEN=${ADMIN_TOKEN}
+      - SIGNUPS_ALLOWED=false
+      - SHOW_PASSWORD_HINT=false
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_FROM=${SMTP_FROM}
+      - SMTP_FROM_NAME=Bitwarden\ (${DOMAIN})
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_SECURITY=${SMTP_SECURITY}
+      - SMTP_USERNAME=${SMTP_USERNAME}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_AUTH_METHOD=Login
+      - YUBICO_CLIENT_ID=${YUBICO_CLIENT_ID}
+      - YUBICO_SECRET_KEY=${YUBICO_SECRET_KEY}
+      - YUBICO_SERVER=${YUBICO_SERVER:-https://api.yubico.com}
+      - PUSH_ENABLED=${PUSH_ENABLED:-true}
+      - IP_HEADER=X-Real-IP
+      - ROCKET_ADDRESS=0.0.0.0
+      - ROCKET_PORT=80
+      - LOG_FILE=/data/vaultwarden.log
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - EXTENDED_LOGGING=true
+    networks:
+      - proxy
+
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-certs:/root/.caddy
+    environment:
+      - ACME_AGREE=true
+      - DOMAIN=${DOMAIN}
+      - EMAIL=${EMAIL}
+    networks:
+      - proxy
+    depends_on:
+      - vaultwarden
+
+  backup:
+    image: jmqm/vaultwarden_backup:latest
+    container_name: vaultwarden_backup
+    restart: unless-stopped
+    volumes:
+      - vw-data:/data:ro
+      - ./backups:/backups
+    environment:
+      - DELETE_AFTER=30
+      - CRON_TIME=0 3 * * *
+      - TZ=America/Denver
+      - BACKUP_ADD_ATTACHMENTS=true
+      - BACKUP_ADD_SENDS=true
+      - BACKUP_ADD_CONFIG=true
+      - BACKUP_ADD_RSA_KEY=true
+    network_mode: none
+
+networks:
+  proxy:
+    driver: bridge
+
+volumes:
+  vw-data:
+    name: vaultwarden_data
+  caddy-data:
+    name: caddy_data
+  caddy-certs:
+    name: caddy_certs

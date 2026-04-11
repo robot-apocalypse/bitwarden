@@ -1,0 +1,12 @@
+[DEFAULT]
+bantime = 86400
+findtime = 3600
+maxretry = 5
+banaction = iptables-allports
+protocol = tcp
+
+[vaultwarden]
+enabled = true
+filter = vaultwarden
+action = iptables-allports[name=vaultwarden]
+logpath = /var/lib/docker/volumes/vaultwarden_data/_data/vaultwarden.log

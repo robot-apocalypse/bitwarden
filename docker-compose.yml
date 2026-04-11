@@ -10,7 +10,7 @@ services:
     environment:
       - DOMAIN
       - ADMIN_TOKEN
-      - SIGNUPS_ALLOWED=false
+      - SIGNUPS_ALLOWED=${SIGNUPS_ALLOWED:-false}
       - SHOW_PASSWORD_HINT=false
       - PUSH_ENABLED=${PUSH_ENABLED:-false}
       - IP_HEADER=X-Real-IP

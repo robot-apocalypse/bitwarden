@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   vaultwarden:
     image: vaultwarden/server:latest
@@ -58,6 +56,16 @@ services:
       - BACKUP_ADD_CONFIG=true
       - BACKUP_ADD_RSA_KEY=true
     network_mode: none
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400 # Once a day
 
 networks:
   proxy:

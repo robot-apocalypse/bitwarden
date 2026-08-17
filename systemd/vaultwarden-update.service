@@ -1,0 +1,10 @@
+[Unit]
+Description=Vaultwarden update with pre-update backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vaultwarden-update.sh
+StandardOutput=journal
+StandardError=journal

@@ -48,6 +48,12 @@ services:
       - vw-data:/data:ro
       - ./backups:/backups
     environment:
+      # Required by the image. Without these the cron job cannot write to
+      # /backups and tar fails with "Permission denied" -- while the log
+      # still prints "New backup created". 0:0 matches the root-owned
+      # ./backups dir and can read every file in the root-owned /data mount.
+      - UID=0
+      - GID=0
       - DELETE_AFTER=30
       - CRON_TIME=0 3 * * *
       - TZ=America/Denver
@@ -57,15 +63,12 @@ services:
       - BACKUP_ADD_RSA_KEY=true
     network_mode: none
 
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - WATCHTOWER_CLEANUP=true
-      - WATCHTOWER_POLL_INTERVAL=86400 # Once a day
+  # Watchtower removed 2026-08-17. containrrr/watchtower is unmaintained and
+  # broke against the Docker API (client 1.25 vs required 1.44), silently
+  # updating nothing for four months while clients auto-updated past the
+  # server. Replaced by the host-side systemd timer vaultwarden-update.timer
+  # (/usr/local/bin/vaultwarden-update.sh), which takes a verified WAL-safe
+  # backup before updating and fails loudly. See docs/upgrade-runbook.md.
 
 networks:
   proxy:

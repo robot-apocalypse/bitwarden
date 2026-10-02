@@ -164,7 +164,7 @@ resource "aws_instance" "vaultwarden" {
 }
 
 output "public_ip" {
-  value = aws_instance.vaultwarden.public_ip
+  value = aws_eip.vaultwarden.public_ip
 }
 
 output "domain" {
@@ -175,6 +175,14 @@ output "instance_id" {
   value = aws_instance.vaultwarden.id
 }
 
+# Without a static IP, a stop/start (not a reboot) gives the instance a new
+# public IP and silently breaks DNS.
+resource "aws_eip" "vaultwarden" {
+  domain   = "vpc"
+  instance = aws_instance.vaultwarden.id
+  tags     = { Name = "vaultwarden" }
+}
+
 resource "aws_route53_record" "bitwarden" {
   zone_id = "Z05138461ITQ58LOV0TYH"
   name    = "bitwarden.peakscale.solutions"
@@ -182,5 +190,5 @@ resource "aws_route53_record" "bitwarden" {
   # Lowered from 300 ahead of the Elastic IP cutover, to shorten the window
   # in which clients still hold the old ephemeral IP.
   ttl     = 60
-  records = [aws_instance.vaultwarden.public_ip]
+  records = [aws_eip.vaultwarden.public_ip]
 }

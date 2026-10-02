@@ -7,7 +7,12 @@
         }
     }
 
-    reverse_proxy vaultwarden:80
+    # Vaultwarden reads the client IP from X-Real-IP (IP_HEADER). Without
+    # this it logged every request as caddy's bridge IP, which made both its
+    # rate limiting and fail2ban useless.
+    reverse_proxy vaultwarden:80 {
+        header_up X-Real-IP {remote_host}
+    }
 
     header {
         -Server

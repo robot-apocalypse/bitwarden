@@ -6,33 +6,15 @@
 set -euo pipefail
 
 DIR=/opt/bitwarden
-BK=$DIR/backups
 TS=$(date +%F-%H%M%S)
 cd "$DIR"
 
 echo "=== vaultwarden-update $TS ==="
 
-# 1. Consistent snapshot via SQLite's online backup API (WAL-safe, no downtime).
-#    The bundled backup container tars db.sqlite3 without db.sqlite3-wal,
-#    so it can miss recent commits. This does not.
+# 1. Verified, WAL-safe backup, local and off-host. Aborts (set -e) if the
+#    snapshot fails integrity_check or the S3 upload fails.
 echo "--- pre-update backup"
-docker run --rm -v vaultwarden_data:/data -v "$BK:/out" alpine sh -c \
-  "apk add --no-cache sqlite >/dev/null 2>&1 && \
-   sqlite3 /data/db.sqlite3 '.backup /out/preupdate-$TS.sqlite3' && \
-   cp /data/rsa_key.pem /out/preupdate-$TS-rsa_key.pem"
-
-# Verify the snapshot before trusting it. A file is not a backup.
-INTEG=$(docker run --rm -v "$BK:/b" alpine sh -c \
-  "apk add --no-cache sqlite >/dev/null 2>&1 && sqlite3 /b/preupdate-$TS.sqlite3 'PRAGMA integrity_check;'")
-if [ "$INTEG" != "ok" ]; then
-  echo "ABORT: pre-update backup failed integrity check: $INTEG" >&2
-  exit 1
-fi
-echo "pre-update backup ok: preupdate-$TS.sqlite3"
-
-# Retain 14 pre-update snapshots.
-ls -t "$BK"/preupdate-*.sqlite3 2>/dev/null | tail -n +15 | xargs -r rm -f
-ls -t "$BK"/preupdate-*-rsa_key.pem 2>/dev/null | tail -n +15 | xargs -r rm -f
+/usr/local/bin/vaultwarden-backup.sh preupdate
 
 BEFORE=$(docker inspect vaultwarden --format '{{.Config.Image}}@{{.Image}}')
 

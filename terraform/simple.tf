@@ -1,6 +1,22 @@
 # Simpler Vaultwarden Terraform - uses default VPC
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.10"
+
+  # State was originally local and lived only on a laptop that was lost.
+  # Re-imported 2026-10-02 (see imports.tf); now remote so that cannot recur.
+  backend "s3" {
+    bucket       = "peakscale-terraform-state-prod"
+    key          = "prod/bitwarden/terraform.tfstate"
+    region       = "us-east-1"
+    use_lockfile = true
+  }
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.40"
+    }
+  }
 }
 
 provider "aws" {
@@ -47,6 +63,7 @@ resource "aws_security_group" "vaultwarden" {
 }
 
 resource "aws_iam_instance_profile" "vaultwarden" {
+  name = "terraform-20260411144220783300000001"
   role = aws_iam_role.ssm.name
 }
 
@@ -103,7 +120,7 @@ resource "aws_instance" "vaultwarden" {
     DEFAULT_FORWARD_POLICY="DROP"
     DEFAULT_APPLICATION_POLICY="SKIP"
     ManageBuiltins=yes
-UFW_CONF
+    UFW_CONF
 
     # Unattended-upgrades configuration
     cat <<UA_CONF > /etc/apt/apt.conf.d/50unattended-upgrades
@@ -112,7 +129,7 @@ UFW_CONF
     };
     Unattended-Upgrades::Automatic-Reboot "true";
     Unattended-Upgrades::Automatic-Reboot-Time "02:00";
-UA_CONF
+    UA_CONF
 
     # UFW setup
     ufw --force enable
@@ -138,6 +155,12 @@ UA_CONF
   EOF
 
   tags = { Name = "vaultwarden" }
+
+  # user_data only runs at first boot, and changing it (or the AMI) would
+  # stop/start or replace the instance. Edits here are for future rebuilds.
+  lifecycle {
+    ignore_changes = [user_data, ami]
+  }
 }
 
 output "public_ip" {
@@ -145,17 +168,19 @@ output "public_ip" {
 }
 
 output "domain" {
-  value = aws_route53_record.test.name
+  value = aws_route53_record.bitwarden.name
 }
 
 output "instance_id" {
   value = aws_instance.vaultwarden.id
 }
 
-resource "aws_route53_record" "test" {
+resource "aws_route53_record" "bitwarden" {
   zone_id = "Z05138461ITQ58LOV0TYH"
-  name    = "bitwarden-test.peakscale.solutions"
+  name    = "bitwarden.peakscale.solutions"
   type    = "A"
-  ttl     = 300
+  # Lowered from 300 ahead of the Elastic IP cutover, to shorten the window
+  # in which clients still hold the old ephemeral IP.
+  ttl     = 60
   records = [aws_instance.vaultwarden.public_ip]
 }

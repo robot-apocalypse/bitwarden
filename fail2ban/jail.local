@@ -1,12 +1,16 @@
-[DEFAULT]
-bantime = 86400
-findtime = 3600
-maxretry = 5
-banaction = iptables-allports
-protocol = tcp
-
+# Installed as /etc/fail2ban/jail.d/vaultwarden.local. Settings are scoped to
+# this jail so they do not leak into Ubuntu's default sshd jail.
 [vaultwarden]
 enabled = true
 filter = vaultwarden
-action = iptables-allports[name=vaultwarden]
 logpath = /var/lib/docker/volumes/vaultwarden_data/_data/vaultwarden.log
+backend = auto
+maxretry = 5
+findtime = 3600
+bantime = 86400
+# Never ban docker bridge addresses: if X-Real-IP ever goes missing, every
+# request appears to come from caddy, and banning it would take the site down.
+ignoreip = 127.0.0.1/8 ::1 172.16.0.0/12
+# Docker-published ports are DNAT'd and traverse FORWARD, not INPUT, so a ban
+# must go in DOCKER-USER to have any effect.
+action = iptables-allports[name=vaultwarden, chain=DOCKER-USER]

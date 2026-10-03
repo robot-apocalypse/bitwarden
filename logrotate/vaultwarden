@@ -1,0 +1,15 @@
+# Installed as /etc/logrotate.d/vaultwarden by systemd/install.sh.
+# copytruncate: vaultwarden holds the file open (O_APPEND) and has no reopen
+# signal, so the file is copied and truncated in place. fail2ban detects the
+# truncation and keeps reading.
+/var/lib/docker/volumes/vaultwarden_data/_data/vaultwarden.log {
+    weekly
+    maxsize 20M
+    rotate 12
+    dateext
+    compress
+    delaycompress
+    copytruncate
+    missingok
+    notifempty
+}

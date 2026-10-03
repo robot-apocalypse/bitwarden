@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installs the host-side Vaultwarden updater (replaces Watchtower) and the
-# daily backup (replaces jmqm/vaultwarden_backup).
+# daily backup (replaces jmqm/vaultwarden_backup), and log rotation.
 # Run as root on the deploy host: sudo ./systemd/install.sh
 set -euo pipefail
 
@@ -15,6 +15,8 @@ for n in update backup; do
   install -m 0644 "$SRC/vaultwarden-$n.service" "$SRC/vaultwarden-$n.timer" /etc/systemd/system/
 done
 
+install -m 0644 "$SRC/../logrotate/vaultwarden" /etc/logrotate.d/vaultwarden
+
 systemctl daemon-reload
 systemctl enable --now vaultwarden-update.timer vaultwarden-backup.timer
 
@@ -23,5 +25,6 @@ echo "Installed. Verify -- do not assume:"
 echo "  systemctl list-timers 'vaultwarden-*'"
 echo "  systemctl start vaultwarden-backup.service"
 echo "  journalctl -u vaultwarden-backup.service -n 20"
+echo "  logrotate -d /etc/logrotate.d/vaultwarden"
 echo "  systemctl start vaultwarden-update.service"
 echo "  journalctl -u vaultwarden-update.service -n 50"

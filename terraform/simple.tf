@@ -122,13 +122,15 @@ resource "aws_instance" "vaultwarden" {
     ManageBuiltins=yes
     UFW_CONF
 
-    # Unattended-upgrades configuration
-    cat <<UA_CONF > /etc/apt/apt.conf.d/50unattended-upgrades
-    Unattended-Upgrades::Allowed-Origins {
-        "Ubuntu:noble-security";
-    };
-    Unattended-Upgrades::Automatic-Reboot "true";
-    Unattended-Upgrades::Automatic-Reboot-Time "02:00";
+    # Unattended-upgrades: a drop-in on top of Ubuntu's stock
+    # 50unattended-upgrades, which keeps the default allowed origins. The key
+    # is Unattended-Upgrade:: (singular). An earlier version overwrote 50-*
+    # with "Unattended-Upgrades::", which apt ignores, so nothing was ever
+    # installed, while the daily run still logged success.
+    cat <<UA_CONF > /etc/apt/apt.conf.d/52unattended-upgrades-local
+    Unattended-Upgrade::Automatic-Reboot "true";
+    // UTC. After the 03:00 America/Denver backup.
+    Unattended-Upgrade::Automatic-Reboot-Time "10:30";
     UA_CONF
 
     # UFW setup

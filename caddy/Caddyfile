@@ -15,6 +15,9 @@
     }
 
     header {
+        # HSTS for this host only: no includeSubDomains, since other
+        # peakscale.solutions hosts are not managed here.
+        Strict-Transport-Security "max-age=31536000"
         -Server
         -X-Powered-By
     }

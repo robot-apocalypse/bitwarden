@@ -165,6 +165,19 @@ resource "aws_instance" "vaultwarden" {
   }
 }
 
+# Only these CAs may issue for the vault's hostname. Caddy uses Let's Encrypt
+# and falls back to ZeroSSL, whose certificates are issued by Sectigo.
+resource "aws_route53_record" "bitwarden_caa" {
+  zone_id = "Z05138461ITQ58LOV0TYH"
+  name    = "bitwarden.peakscale.solutions"
+  type    = "CAA"
+  ttl     = 3600
+  records = [
+    "0 issue \"letsencrypt.org\"",
+    "0 issue \"sectigo.com\"",
+  ]
+}
+
 output "public_ip" {
   value = aws_eip.vaultwarden.public_ip
 }

@@ -11,6 +11,13 @@ cd "$DIR"
 
 echo "=== vaultwarden-update $TS ==="
 
+# Outcome record, read by the daily backup to feed the UpdateOK alarm.
+# Anything other than reaching the end of this script records "failed".
+STATUS=/var/lib/vaultwarden-ops/update-status
+mkdir -p "$(dirname "$STATUS")"
+echo "running $(date +%s)" > "$STATUS"
+trap 'echo "failed $(date +%s)" > "$STATUS"' EXIT
+
 # 1. Verified, WAL-safe backup, local and off-host. Aborts (set -e) if the
 #    snapshot fails integrity_check or the S3 upload fails.
 echo "--- pre-update backup"
@@ -69,4 +76,6 @@ fi
 echo "vaultwarden healthy, caddy running, end-to-end probe ok"
 
 docker image prune -f >/dev/null 2>&1 || true
+trap - EXIT
+echo "ok $(date +%s)" > "$STATUS"
 echo "=== done $(date +%F-%H%M%S) ==="

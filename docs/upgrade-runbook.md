@@ -1,225 +1,227 @@
-# Vaultwarden upgrade runbook
+# Vaultwarden operations runbook
 
-Host: AWS EC2 (`vaultwarden`), deploy dir `/opt/bitwarden`.
+Production: `https://bitwarden.peakscale.solutions`, one EC2 instance
+(`i-0c20d9e1feb8aa8f8`, us-west-2, Elastic IP `35.85.12.15`), deploy dir
+`/opt/bitwarden`, data in the Docker volume `vaultwarden_data`.
 
-## Why (2026-08-17)
-
-Server was stuck on **1.35.4** (container created 2026-04-17) because the
-Watchtower service could not talk to the Docker daemon:
-
-```
-Error response from daemon: client version 1.25 is too old.
-Minimum supported API version is 1.44
-```
-
-`containrrr/watchtower` is unmaintained, so nothing had updated in four months.
-
-Meanwhile clients auto-updated. The desktop client calls
-`POST /identity/accounts/prelogin/password`, an endpoint **added in 1.36.0**
-(PR #7156, released 2026-05-03). On 1.35.4 it 404s, and the client reports
-"an unexpected error occurred".
-
-1.36.0 also carries security fixes, including **SSRF via the icon endpoint**
-(GHSA-72vh-x5jq-m82g), which this deployment exercises heavily.
-
-## Pre-flight
+**Access is via SSM, not SSH** (port 22 is closed and no keys are installed):
 
 ```bash
-cd /opt/bitwarden
-
-# 1. Confirm volume identity. Expect exactly one: vaultwarden_data.
-#    Two volumes (e.g. bitwarden_vw-data) means a past deploy switched
-#    volumes and regenerated rsa_key.pem -- stop and identify the live one.
-docker volume ls | grep -iE 'vw|vault|bitwarden'
-
-# 2. Trigger an on-demand backup. Verify the TIMESTAMP is from just now --
-#    the presence of old files proves nothing.
-docker exec vaultwarden_backup manual
-ls -lh --time-style=full-iso ./backups | tail -5
-date
-
-# 3. Independent copy of the data volume.
-#    Vaultwarden MUST be stopped: SQLite runs in WAL mode (db.sqlite3-wal /
-#    -shm), and copying it live yields a tarball that restores to a stale or
-#    corrupt database -- worse than no backup, because you would trust it.
-docker compose stop vaultwarden
-docker run --rm -v vaultwarden_data:/data -v "$PWD:/out" alpine \
-  tar czf /out/vw-data-$(date +%F).tar.gz -C /data .
-ls -lh vw-data-*.tar.gz
+aws ssm start-session --target i-0c20d9e1feb8aa8f8 --profile peakscale --region us-west-2
 ```
 
-Vaultwarden stays stopped from here into the upgrade below. Confirm the
-working tree matches what is deployed (expect HEAD `e042a83`, clean):
+Infrastructure is Terraform in `terraform/`, with state in
+`s3://peakscale-terraform-state-prod/prod/bitwarden/terraform.tfstate`.
+
+> **Ground rule.** Three mechanisms on this host -- Watchtower, the old backup
+> container, and unattended-upgrades -- ran for months while doing nothing,
+> and each logged success. "Container is up" or "timer is enabled" is not
+> "job is working". After changing anything, run it and read its output.
+
+## What runs automatically
+
+| What | When | Mechanism | Output |
+|---|---|---|---|
+| Backup | daily 03:00 America/Denver | `vaultwarden-backup.timer` -> `/usr/local/bin/vaultwarden-backup.sh daily` | `backups/daily-*.tar.gz` (keep 30) + S3 |
+| Container update | Sun 03:30 UTC (+0-30 min) | `vaultwarden-update.timer` -> `/usr/local/bin/vaultwarden-update.sh` | `backups/preupdate-*.tar.gz` (keep 14) + S3 |
+| OS security updates | daily | `unattended-upgrades` (stock `50-` + `52unattended-upgrades-local`) | reboots at 10:30 UTC when required |
+| Disk snapshots | daily 11:00 UTC | DLM policy (Terraform `backups.tf`) | EBS snapshots, keep 7 |
+| Log rotation | weekly or at 20 MB | `/etc/logrotate.d/vaultwarden` | `vaultwarden.log-YYYYMMDD.gz`, keep 12 |
+| Alerting | continuous | CloudWatch alarms (Terraform `alerts.tf`) | email to ian@peakscale.solutions |
+
+Everything under `systemd/` and `logrotate/` is installed by
+`sudo ./systemd/install.sh`, which is safe to re-run.
+
+### Backups
+
+`vaultwarden-backup.sh` snapshots the database with SQLite's online backup
+API, which includes the WAL. A plain file copy of `db.sqlite3` does not: the
+main file is only checkpointed when the container restarts, so before
+2026-10-02 every "daily" archive was the database as of the last update. The
+script then:
+
+1. runs `PRAGMA integrity_check` on the snapshot, and aborts if it fails;
+2. tars the snapshot with `rsa_key.pem`, plus `attachments/`, `sends/` and
+   `config.json` if present;
+3. uploads the archive to `s3://peakscale-vaultwarden-backups/vaultwarden/`.
+   The bucket is versioned, expires objects after 90 days, and the instance
+   role may only `PutObject` -- it cannot list, read, or delete;
+4. publishes the CloudWatch heartbeat (see Alerts).
+
+Not in the archives: `.env` (DOMAIN, EMAIL, the hashed ADMIN_TOKEN) and the
+Caddy certificates. Both are in the EBS snapshots, and both are recreatable.
+
+For an on-demand backup before risky work, use any label:
 
 ```bash
-git status
-git log --oneline -1
+sudo /usr/local/bin/vaultwarden-backup.sh manual
 ```
 
-`rsa_key.pem` lives in the data volume. Losing it invalidates every client
-session. Confirm it is inside the tarball before continuing:
+### Container updates
+
+`vaultwarden-update.sh`:
+
+1. takes a `preupdate` backup, and **aborts the update if it fails**;
+2. `docker compose pull`, then `docker compose up -d` (`up` alone updates
+   nothing -- the tags float, so `pull` is what fetches new images);
+3. requires vaultwarden's HEALTHCHECK to report healthy, caddy to be running,
+   and `/alive` to answer through caddy, or exits non-zero;
+4. records `ok <epoch>` in `/var/lib/vaultwarden-ops/update-status`. Any
+   other exit records `failed`.
+
+Images float (`vaultwarden/server:latest`, `caddy:2`) on purpose. The August
+2026 outage was the server freezing at 1.35.4 while clients auto-updated
+past it, which broke desktop and mobile login: `/identity/accounts/prelogin/password`
+returned 404 because that endpoint arrived in 1.36.0. Staying current is the
+requirement; the pre-update backup and health checks are the safety net.
+
+## Alerts
+
+Both alarms fire on the **absence** of a success signal, and are evaluated
+in CloudWatch, not on the host.
+
+- **`vaultwarden-backup-missing`** -- no `BackupSuccess` (Label=daily)
+  datapoint for 26 hours. The causes are a failed backup, a stopped timer, or
+  a dead host or SSM agent. Start with:
+
+  ```bash
+  systemctl list-timers 'vaultwarden-*'
+  journalctl -u vaultwarden-backup.service -n 40
+  ```
+
+- **`vaultwarden-update-failed`** -- the daily backup reported `UpdateOK=0`:
+  the last update run failed, is still marked `running`, or last succeeded
+  over 8 days ago. Start with:
+
+  ```bash
+  cat /var/lib/vaultwarden-ops/update-status
+  journalctl -u vaultwarden-update.service -n 60
+  ```
+
+Each alarm also emails when it returns to OK.
+
+## Checking health by hand
 
 ```bash
-tar tzf vw-data-$(date +%F).tar.gz | grep rsa_key
+systemctl list-timers 'vaultwarden-*'
+journalctl -u vaultwarden-backup.service -n 20
+journalctl -u vaultwarden-update.service -n 30
+cat /var/lib/vaultwarden-ops/update-status
+docker ps --format '{{.Names}} {{.Image}} {{.Status}}'
+docker exec vaultwarden /vaultwarden --version
+ls -lt /opt/bitwarden/backups | head
+fail2ban-client status vaultwarden
+apt list --upgradable 2>/dev/null | grep -c security     # expect 0 or close
 ```
 
-### Alternative: AMI snapshot
+Verify a backup by restoring it, not by its existence (see Restore).
 
-An AMI of the whole instance is a valid substitute for the tarball, and is a
-better rollback (launch a fresh instance from it). Taken with containers
-running it is crash-consistent, not application-consistent; SQLite recovers
-from that by replaying the WAL on first start. Stopping vaultwarden before
-the snapshot still gives a cleaner image if you have the option.
+## Manual update
 
-## Upgrade
-
-`docker compose up -d` on its own does **not** update anything: the `latest`
-tag is already present locally, so compose reuses it. The `pull` is what
-fetches the new image.
-
-`vw-data` is a **named** volume (`name: vaultwarden_data`), so a normal
-pull/up preserves the database and signing key. Clients are NOT logged out
-by this step.
+Run the automated job, which takes the backup and does the health checks:
 
 ```bash
-cd /opt/bitwarden
-docker compose pull
-docker compose up -d
-docker compose ps
-docker compose logs --tail=50 vaultwarden
+sudo systemctl start vaultwarden-update.service
+journalctl -u vaultwarden-update.service -n 30
 ```
 
-## Verify
-
-```bash
-curl -s https://bitwarden.peakscale.solutions/api/version          # expect 1.37.x
-curl -s -o /dev/null -w '%{http_code}\n' -X POST \
-  -H 'Content-Type: application/json' -d '{"email":"x@example.com"}' \
-  https://bitwarden.peakscale.solutions/identity/accounts/prelogin/password
-# expect anything but 404
-```
-
-Then log in from desktop and mobile.
+The run is good only if the journal ends with `vaultwarden healthy, caddy
+running, end-to-end probe ok` and `=== done`.
 
 ## Rollback
 
-Restore into a **new** volume and repoint compose at it. Never `rm -rf` the
-live volume first -- a bad tarball would leave you with nothing to go back to.
+Vaultwarden upgrades can migrate the database schema, and an older binary
+will not start on a newer schema. A rollback is therefore a restore, not
+just an image change.
+
+1. Find the version before the update, from the journal's
+   `updated: <old> -> <new>` line, or from the vaultwarden release notes.
+2. Pin it in `docker-compose.yml`, e.g. `image: vaultwarden/server:1.37.2`.
+3. Restore that run's `preupdate-*.tar.gz` (see Restore), then
+   `docker compose up -d`.
+4. While pinned, the weekly updater keeps you on that version (it pulls the
+   pinned tag, so nothing changes). Unpin back to `latest` once upstream has
+   fixed the problem, or the server falls behind the clients again -- which
+   is exactly what caused the August 2026 outage.
+
+## Restore
+
+Tested 2026-10-03: the newest S3 archive was restored into a throwaway
+container running the production image. It started cleanly, kept the
+existing `rsa_key.pem`, passed `integrity_check`, and had all ciphers.
+
+1. Get the archive. Local copies are in `/opt/bitwarden/backups/`. For S3,
+   from a workstation with SSO credentials (the instance cannot read the
+   bucket):
+
+   ```bash
+   aws s3 ls s3://peakscale-vaultwarden-backups/vaultwarden/ --profile peakscale
+   # The host has no SSH/scp, so hand it a short-lived download link:
+   aws s3 presign s3://peakscale-vaultwarden-backups/vaultwarden/<file>.tar.gz --expires-in 600 --profile peakscale
+   # then on the host:
+   sudo curl -fsS -o /opt/bitwarden/backups/<file>.tar.gz '<presigned-url>'
+   ```
+
+2. Take a backup of the current state first, even a broken one:
+   `sudo /usr/local/bin/vaultwarden-backup.sh prerestore`.
+
+3. Stop vaultwarden and restore into the volume. **Delete `db.sqlite3-wal`
+   and `db.sqlite3-shm`** -- otherwise SQLite replays the old WAL on top of
+   the restored database:
+
+   ```bash
+   cd /opt/bitwarden
+   docker compose stop vaultwarden
+   docker run --rm -v vaultwarden_data:/data -v "$PWD/backups:/in:ro" alpine sh -c \
+     'rm -f /data/db.sqlite3-wal /data/db.sqlite3-shm && tar -xzf /in/<file>.tar.gz -C /data'
+   docker compose start vaultwarden
+   ```
+
+4. Verify: `docker ps` shows vaultwarden healthy, the web vault logs in, and
+   the item count looks right. `rsa_key.pem` came from the same archive, so
+   existing client sessions keep working.
+
+To rehearse without touching production, restore into a new volume and run
+`vaultwarden/server` against it on a local port, as the 2026-10-03 test did.
+
+**Whole-host loss:** launch from the latest DLM snapshot (it includes `.env`
+and the Caddy certificates), or rebuild with Terraform and restore the newest
+S3 archive into a fresh deploy. Then point the Elastic IP at the new
+instance.
+
+## OS updates and reboots
+
+`unattended-upgrades` installs the security pocket daily and reboots at
+10:30 UTC when required. That includes Docker and containerd security
+releases, which restart the engine; the containers come back because they
+are `restart: unless-stopped`. Ordinary `noble-updates` are not applied
+automatically -- run `sudo apt full-upgrade` occasionally.
+
+The config is Ubuntu's stock `/etc/apt/apt.conf.d/50unattended-upgrades` plus
+`52unattended-upgrades-local`. Do not overwrite `50-`: the key is
+`Unattended-Upgrade::` (singular). The original user_data wrote
+`Unattended-Upgrades::`, which apt silently ignores, so from April to
+October 2026 nothing was installed while the daily run logged success. To
+verify, run:
 
 ```bash
-cd /opt/bitwarden
-docker compose down
-
-# Restore into a fresh volume, leaving vaultwarden_data untouched.
-docker volume create vaultwarden_data_restored
-docker run --rm -v vaultwarden_data_restored:/data -v "$PWD:/in" alpine \
-  tar xzf /in/vw-data-<DATE>.tar.gz -C /data
-docker run --rm -v vaultwarden_data_restored:/data alpine ls -l /data/rsa_key.pem
-
-# In docker-compose.yml: set the volume name to vaultwarden_data_restored
-# and pin the previous image (vaultwarden/server:1.35.4), then:
-docker compose up -d
+sudo unattended-upgrade --dry-run -d 2>&1 | grep 'Allowed origins are'   # must not be empty
 ```
 
-Only delete `vaultwarden_data` once the restored volume is confirmed good.
+## History
 
-## Backups were silently broken (found 2026-08-17)
-
-`./backups` was **empty since 2026-04-11** -- this deployment had never
-produced a single backup. The container logged:
-
-```
-tar: can't open '/backups/2026-08-14_03-00-00.tar.xz': Permission denied
-[2026-08-14 03:00:00 AM] New backup created, no archives older than 30 days to delete.
-```
-
-It reports success on the line after the write fails, which is why four
-months passed unnoticed.
-
-Cause: `jmqm/vaultwarden_backup` requires `UID`/`GID` env vars and the
-compose file set neither, so the cron job could not write to the root-owned
-`./backups` bind mount. Fixed by adding `UID=0` / `GID=0` (matches the
-root-owned mount, and can read the root-owned `/data`).
-
-Verify after deploying the change -- do not assume:
-
-```bash
-docker compose up -d backup
-docker exec vaultwarden_backup manual
-ls -lh --time-style=full-iso ./backups     # a real file, timestamped NOW
-tar tJf ./backups/<newest>.tar.xz | head   # it must actually open
-```
-
-The last step matters: a file existing is not proof it is a valid archive.
-Confirm `rsa_key.pem` and `db.sqlite3` are inside.
-
-The image is unmaintained (last pushed 2024-10-06), and its script is **not
-WAL-safe**: it tars `db.sqlite3` without `db.sqlite3-wal`, so a restore can
-silently lose everything committed since the last checkpoint. Treat its
-archives as a secondary copy. The primary snapshots come from the updater
-below, which uses SQLite's online backup API.
-
-## Automated updates (installed 2026-08-17)
-
-Watchtower was **replaced**, not removed. The requirement is real -- clients
-auto-update, so a server that never updates will break again. But the fix
-is host-side, because Watchtower's failure mode was a third-party image
-rotting against the Docker API, which a host-side updater cannot suffer:
-it uses the same `docker` CLI that apt keeps in step with the daemon.
-
-- `/usr/local/bin/vaultwarden-update.sh`
-- `/etc/systemd/system/vaultwarden-update.{service,timer}` -- Sun 03:30,
-  `Persistent=true`, 30m jitter
-
-Each run: takes a WAL-safe snapshot via SQLite's online backup API,
-**verifies it with `PRAGMA integrity_check` and aborts if it fails**, keeps
-the last 14, pulls, brings the stack up, then waits for vaultwarden's own
-container HEALTHCHECK and **exits non-zero if it never becomes healthy**.
-
-```bash
-systemctl list-timers vaultwarden-update.timer   # when it next runs
-systemctl start vaultwarden-update.service       # run now
-journalctl -u vaultwarden-update.service -n 50   # what happened
-```
-
-Note on the health check: the first version shelled out to `wget` inside the
-vaultwarden container. The 1.37.1 image is Debian-based and has neither
-`wget` nor `curl`, so the check errored, the string comparison did not match,
-and the service exited 0 -- a check that could not fail. Caught only by
-running it. If you edit this script, **run it and read the journal**; the
-recurring lesson in this incident is that nothing here reports its own
-failure.
-
-- **Pin the image tag** (`vaultwarden/server:1.37.1`) instead of `latest`, so
-  updates are intentional and the running version is visible in git. Note this
-  trades away automatic patching -- with the timer in place, staying on
-  `latest` is defensible; pinning means updating the tag deliberately.
-
-## Follow-ups
-
-- **The AMI from 2026-08-17 is a PRE-fix snapshot.** It predates the 1.37.1
-  upgrade, the backup permission fix, the removal of Watchtower, and the
-  updater. Restoring it silently reverts all of them. Take a fresh AMI now
-  that the host is in its intended state, and treat the old one as
-  incident-rollback only.
-- **Log rotation**: `LOG_FILE=/data/vaultwarden.log` with `EXTENDED_LOGGING`
-  and no rotation -- 35 MB as of 2026-08-17 on a root filesystem at 67%
-  (2.3 GB free). Not urgent at that rate, but unbounded. `icon_cache` grows
-  too. Add rotation before it matters.
-- **No alerting path**: SMTP is unconfigured, so nothing here can tell you
-  when it breaks -- which is how four months passed. Configuring SMTP would
-  let the updater's `OnFailure=` actually reach you.
-- **Client IPs**: compose sets `IP_HEADER=X-Real-IP` but `caddy/Caddyfile`
-  uses a bare `reverse_proxy vaultwarden:80`. Caddy sends `X-Forwarded-For`,
-  not `X-Real-IP`, so every log line shows the proxy container IP
-  (172.18.0.3). Add `header_up X-Real-IP {remote_host}`. Latent until
-  fail2ban is installed, which would then ban the proxy.
-- **Push**: `PUSH_ENABLED=false` with populated `PUSH_INSTALLATION_ID`/`KEY`
-  looks like leftover from commit 18ec5c6. Re-enable if mobile should
-  update on its own.
-- **Signups are closed** -- verified, no action needed. `/api/config` reports
-  `disableUserRegistration: false`, but that field is `is_signup_disabled()`,
-  a UI hint for clients. It stays false here because SMTP is unconfigured
-  (`mail_enabled()` false) and `invitations_allowed` defaults true; hiding
-  registration in that state would leave invited users unable to sign up.
-  Enforcement is `is_signup_allowed(email)` -> `signups_allowed()` = false.
+- **2026-08-17** -- Watchtower had been crash-looping for four months
+  (`client version 1.25 is too old`), freezing the server at 1.35.4 and
+  breaking desktop and mobile clients. Replaced with the host-side updater.
+  The `jmqm/vaultwarden_backup` container was found never to have written a
+  file (missing `UID`/`GID`) while logging "New backup created".
+- **2026-10-02** -- Drift check. The backup container's archives turned out to
+  be frozen copies, missing the WAL, so it was replaced by
+  `vaultwarden-backup.sh` with S3 and DLM. The lost Terraform state was
+  re-imported, an Elastic IP was added, and fail2ban was made to work: caddy
+  now sends `X-Real-IP`, the filter was rewritten, and bans go in DOCKER-USER.
+- **2026-10-03** -- Security review. unattended-upgrades was found
+  never to have run; it was fixed and 146 security updates were installed.
+  Other changes: the admin token was hashed, HSTS and a CAA record were added,
+  log rotation was set up, the restore was tested, and these alerts were
+  added.

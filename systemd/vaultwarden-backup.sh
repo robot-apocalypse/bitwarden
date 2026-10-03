@@ -16,6 +16,7 @@ BUCKET=peakscale-vaultwarden-backups
 TS=$(date +%F-%H%M%S)
 NAME=$LABEL-$TS.tar.gz
 AWS=/snap/bin/aws
+STATUS=/var/lib/vaultwarden-ops/update-status
 case "$LABEL" in preupdate) KEEP=14 ;; *) KEEP=30 ;; esac
 
 echo "=== vaultwarden-backup $NAME ==="
@@ -45,4 +46,23 @@ echo "local ok: $BK/$NAME ($(stat -c %s "$BK/$NAME") bytes)"
 echo "s3 ok: s3://$BUCKET/vaultwarden/$NAME"
 
 ls -t "$BK"/"$LABEL"-*.tar.gz 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
+
+# Heartbeat for the CloudWatch dead-man's-switch alarm. This is only reached
+# when everything above succeeded, so a missing datapoint means a failure, a
+# timer that stopped running, or a dead host -- alerted on by AWS, not by
+# anything on this box.
+put_metric() {
+  "$AWS" cloudwatch put-metric-data --region us-west-2 --namespace Vaultwarden \
+    --metric-name "$1" --value "$2" ${3:+--dimensions "$3"}
+}
+put_metric BackupSuccess 1 "Label=$LABEL"
+
+# The daily run also reports on the weekly updater (see vaultwarden-update.sh):
+# 1 only if its last run succeeded and was under 8 days ago.
+if [ "$LABEL" = daily ]; then
+  read -r STATE WHEN 2>/dev/null < "$STATUS" || { STATE=missing; WHEN=0; }
+  if [ "$STATE" = ok ] && [ $(( $(date +%s) - WHEN )) -lt $(( 8 * 86400 )) ]; then OK=1; else OK=0; fi
+  echo "updater: last state=$STATE at $(date -d @"$WHEN" +%F-%H%M%S) -> UpdateOK=$OK"
+  put_metric UpdateOK "$OK"
+fi
 echo "=== done ==="
